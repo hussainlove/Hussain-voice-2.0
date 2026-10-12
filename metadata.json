@@ -1,0 +1,6 @@
+{
+  "name": "Hussain Voice",
+  "description": "Free Text-to-Speech Studio & Developer API Hub with 580+ natural voices, parallel MP3 generation, pitch and speed controls, and 20 free REST APIs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
