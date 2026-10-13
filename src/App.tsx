@@ -89,14 +89,8 @@ export default function App() {
   const [resToast, setResToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
-  // Theme state
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('hv-theme');
-      if (saved === 'dark' || saved === 'light') return saved;
-    }
-    return 'light';
-  });
+  // Theme state: Default to the original first style (classic light paper Neo-Brutalist)
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -178,7 +172,7 @@ export default function App() {
 
     setChunkStatuses(chunks.map(() => 'active'));
     setProgressPct(5);
-    setProgressText(`Synthesizing with ${selectedVoice.name} (${selectedVoice.gender})...`);
+    setProgressText(`⚡ Synthesizing with ${selectedVoice.name} (${selectedVoice.gender})...`);
 
     let doneCount = 0;
     const t0 = Date.now();
@@ -195,9 +189,8 @@ export default function App() {
     };
 
     try {
-      // Process chunks with smooth batching to avoid WebSocket overload
       const blobs: Blob[] = new Array(chunks.length);
-      const concurrency = 2; // Process 2 chunks concurrently
+      const concurrency = 2; // Process 2 chunks concurrently for smooth websocket stability
       for (let i = 0; i < chunks.length; i += concurrency) {
         const batch = chunks.slice(i, i + concurrency);
         const batchPromises = batch.map(async (chunkText, batchIdx) => {
@@ -238,11 +231,11 @@ export default function App() {
       }
 
       setProgressPct(98);
-      setProgressText('Merging audio streams...');
+      setProgressText('Merging audio streams in browser...');
 
       const validBlobs = blobs.filter((b) => b && b.size > 0);
       if (validBlobs.length === 0) {
-        throw new Error('No audio data received');
+        throw new Error('No audio received from synthesis');
       }
 
       const merged = new Blob(validBlobs, { type: 'audio/mpeg' });
@@ -293,7 +286,7 @@ export default function App() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="badge" style={{ background: 'var(--surface2)' }}>
+            <span className="badge">
               🎙️ {voices.length || 580}+ Voices
             </span>
             <button
@@ -513,11 +506,8 @@ export default function App() {
                 >
                   {selectedVoice ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-                      <span style={{ fontSize: '1.1rem' }}>
-                        {selectedVoice.gender === 'Male' ? '👨' : '👩'}
-                      </span>
                       <span>
-                        #{selectedVoice.index} · <strong>{selectedVoice.name}</strong> ({selectedVoice.gender}) · {selectedVoice.country} · {selectedVoice.language}
+                        🎤 #{selectedVoice.index} · <strong>{selectedVoice.name}</strong> · {selectedVoice.gender} · {selectedVoice.country} · {selectedVoice.language}
                       </span>
                     </div>
                   ) : (
@@ -773,8 +763,8 @@ export default function App() {
       </div>
 
       {/* MINIMAL FOOTER */}
-      <footer className="hv-footer" style={{ marginTop: 40, padding: '24px clamp(14px, 4vw, 50px)' }}>
-        <div className="foot-bottom" style={{ borderTop: 'none', paddingTop: 0 }}>
+      <footer className="hv-footer">
+        <div className="foot-bottom">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div className="logo-badge" style={{ width: 24, height: 24, fontSize: '0.75rem' }}>HV</div>
             <span className="foot-copy">
