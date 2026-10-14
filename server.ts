@@ -50,7 +50,7 @@ try {
 
 // Language fallbacks with strictly enforced GENDER separation
 const LANGUAGE_FALLBACKS: Record<string, { male: string; female: string }> = {
-  Multilingual: { male: 'en-US-AndrewMultilingualNeural', female: 'en-US-AvaMultilingualNeural' },
+  Multilingual: { male: 'en-US-GuyNeural', female: 'en-US-AvaMultilingualNeural' },
   English: { male: 'en-GB-RyanNeural', female: 'en-US-AriaNeural' },
   Urdu: { male: 'ur-PK-AsadNeural', female: 'ur-PK-UzmaNeural' },
   Hindi: { male: 'hi-IN-MadhurNeural', female: 'hi-IN-SwaraNeural' },
@@ -85,7 +85,10 @@ function resolveShortName(voice: VoiceEntry): string {
     
     // If it's a known male voice mapping or matches, use it
     if (isVoiceMale) {
-      if (mapped.includes('Ryan') || mapped.includes('Andrew') || mapped.includes('Brian') || mapped.includes('Guy') || mapped.includes('Thierry') || mapped.includes('Dmitry') || mapped.includes('Tamas') || mapped.includes('Asad') || mapped.includes('Madhur')) {
+      if (mapped.includes('Andrew')) {
+        return 'en-US-GuyNeural';
+      }
+      if (mapped.includes('Ryan') || mapped.includes('Brian') || mapped.includes('Guy') || mapped.includes('Thierry') || mapped.includes('Dmitry') || mapped.includes('Tamas') || mapped.includes('Asad') || mapped.includes('Madhur')) {
         return mapped;
       }
     } else if (isVoiceFemale) {
@@ -137,15 +140,29 @@ async function singleEdgeAttempt(
     const tts = new MsEdgeTTS();
     let settled = false;
 
-    const timer = setTimeout(() => {
+    // Generous initial timeout scaled by character length
+    const initialTimeoutMs = Math.max(25000, text.length * 60);
+    let timer = setTimeout(() => {
+      cleanupAndReject(new Error(`Edge TTS timeout for voice: ${shortName}`));
+    }, initialTimeoutMs);
+
+    const resetInactivityTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        cleanupAndReject(new Error(`Edge TTS stream inactive for voice: ${shortName}`));
+      }, 15000);
+    };
+
+    const cleanupAndReject = (err: Error) => {
       if (!settled) {
         settled = true;
+        clearTimeout(timer);
         try {
           tts.close();
         } catch {}
-        reject(new Error(`Edge TTS timeout for voice: ${shortName}`));
+        reject(err);
       }
-    }, 12000);
+    };
 
     tts
       .setMetadata(shortName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3)
@@ -159,6 +176,7 @@ async function singleEdgeAttempt(
 
         audioStream.on('data', (chunk: Buffer) => {
           chunks.push(Buffer.from(chunk));
+          resetInactivityTimer();
         });
 
         audioStream.on('end', () => {
@@ -178,54 +196,102 @@ async function singleEdgeAttempt(
         });
 
         audioStream.on('error', (err: Error) => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            try {
-              tts.close();
-            } catch {}
-            reject(err);
-          }
+          cleanupAndReject(err);
         });
       })
       .catch((err: Error) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          try {
-            tts.close();
-          } catch {}
-          reject(err);
-        }
+        cleanupAndReject(err);
       });
   });
 }
 
-async function synthesizeEdgeWithRetry(
+async function synthesizeGoogleFallback(text: string, lang: string): Promise<Buffer> {
+  const langLower = (lang || 'English').toLowerCase();
+  let code = 'en';
+  if (langLower.includes('urdu') || langLower.includes('pakistan')) code = 'ur';
+  else if (langLower.includes('hindi') || langLower.includes('india')) code = 'hi';
+  else if (langLower.includes('arabic')) code = 'ar';
+  else if (langLower.includes('french')) code = 'fr';
+  else if (langLower.includes('spanish')) code = 'es';
+  else if (langLower.includes('german')) code = 'de';
+  else if (langLower.includes('russian')) code = 'ru';
+  else if (langLower.includes('japanese')) code = 'ja';
+  else if (langLower.includes('chinese')) code = 'zh';
+  else if (langLower.includes('turkish')) code = 'tr';
+  else if (langLower.includes('tamil')) code = 'ta';
+
+  const clean = text.replace(/[*_`~><^#|\\]/g, '').replace(/\s+/g, ' ').trim();
+  const words = clean.split(' ');
+  const parts: string[] = [];
+  let curr = '';
+  for (const w of words) {
+    if ((curr + ' ' + w).length <= 180) {
+      curr = curr ? `${curr} ${w}` : w;
+    } else {
+      if (curr) parts.push(curr);
+      curr = w;
+    }
+  }
+  if (curr) parts.push(curr);
+  if (parts.length === 0) parts.push(clean || 'Hello');
+
+  const buffers: Buffer[] = [];
+  for (const part of parts) {
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(part)}&tl=${encodeURIComponent(code)}&client=tw-ob`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+    if (!res.ok) throw new Error(`Google TTS HTTP ${res.status}`);
+    const ab = await res.arrayBuffer();
+    buffers.push(Buffer.from(ab));
+  }
+  return Buffer.concat(buffers);
+}
+
+async function synthesizeWithFallback(
   shortName: string,
   text: string,
   pitch: number,
   rate: number,
-  isMale: boolean
-): Promise<Buffer> {
-  // First attempt
+  selectedVoice: VoiceEntry
+): Promise<{ buffer: Buffer; provider: string }> {
+  const isMale = selectedVoice.gender.toLowerCase() === 'male';
+
+  // 1. Primary Edge voice attempt
   try {
-    return await ttsQueue.run(() => singleEdgeAttempt(shortName, text, pitch, rate));
-  } catch (err1) {
-    console.warn(`[TTS] Attempt 1 failed for ${shortName}:`, (err1 as any)?.message);
+    const buf = await ttsQueue.run(() => singleEdgeAttempt(shortName, text, pitch, rate));
+    return { buffer: buf, provider: `Edge (${shortName})` };
+  } catch (err1: any) {
+    console.warn(`[TTS] Attempt 1 failed for ${shortName}:`, err1?.message);
   }
 
-  // Second attempt with small delay
+  // 2. Retry with short backoff
   await new Promise((r) => setTimeout(r, 400));
   try {
-    return await ttsQueue.run(() => singleEdgeAttempt(shortName, text, pitch, rate));
-  } catch (err2) {
-    console.warn(`[TTS] Attempt 2 failed for ${shortName}:`, (err2 as any)?.message);
+    const buf = await ttsQueue.run(() => singleEdgeAttempt(shortName, text, pitch, rate));
+    return { buffer: buf, provider: `Edge (${shortName} retry)` };
+  } catch (err2: any) {
+    console.warn(`[TTS] Attempt 2 failed for ${shortName}:`, err2?.message);
   }
 
-  // Third attempt: Fallback to rock-solid standard male or female Edge voice
-  const safeVoice = isMale ? 'en-GB-RyanNeural' : 'en-US-AriaNeural';
-  return await ttsQueue.run(() => singleEdgeAttempt(safeVoice, text, pitch, rate));
+  // 3. Fallback to alternative neural voice of matching gender
+  const altVoice = isMale ? 'en-US-GuyNeural' : 'en-US-AvaMultilingualNeural';
+  if (shortName !== altVoice) {
+    try {
+      const buf = await ttsQueue.run(() => singleEdgeAttempt(altVoice, text, pitch, rate));
+      return { buffer: buf, provider: `Edge Neural Fallback (${altVoice})` };
+    } catch (err3: any) {
+      console.warn(`[TTS] Attempt 3 failed with alternate neural voice:`, err3?.message);
+    }
+  }
+
+  // 4. Guaranteed fallback via Google TTS audio stream
+  console.log(`[TTS] Falling back to Google TTS for language ${selectedVoice.language}`);
+  const fallbackBuf = await synthesizeGoogleFallback(text, selectedVoice.language);
+  return { buffer: fallbackBuf, provider: 'Google TTS Fallback' };
 }
 
 async function handleTtsRequest(req: express.Request, res: express.Response) {
@@ -280,7 +346,13 @@ async function handleTtsRequest(req: express.Request, res: express.Response) {
       `[TTS Request] Voice: #${selectedVoice.index} ${selectedVoice.name} (${selectedVoice.gender}) -> Edge: ${shortName} | Pitch: ${pitch} | Rate: ${rate}`
     );
 
-    const audioBuffer = await synthesizeEdgeWithRetry(shortName, text, pitch, rate, isMale);
+    const { buffer: audioBuffer, provider } = await synthesizeWithFallback(
+      shortName,
+      text,
+      pitch,
+      rate,
+      selectedVoice
+    );
 
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Content-Length', String(audioBuffer.length));
@@ -289,6 +361,7 @@ async function handleTtsRequest(req: express.Request, res: express.Response) {
     res.setHeader('X-Voice-Name', encodeURIComponent(selectedVoice.name));
     res.setHeader('X-Voice-Gender', selectedVoice.gender);
     res.setHeader('X-Edge-ShortName', shortName);
+    res.setHeader('X-TTS-Provider', provider);
     res.setHeader('X-Char-Count', String(text.length));
     res.send(audioBuffer);
   } catch (err: any) {

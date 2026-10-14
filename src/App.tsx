@@ -16,7 +16,7 @@ interface ToastItem {
   type: 'ok' | 'err' | '';
 }
 
-const MAX_CHUNK = 900;
+const MAX_CHUNK = 420;
 
 const SAMPLE_TEXTS = [
   {
